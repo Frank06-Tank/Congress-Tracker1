@@ -175,7 +175,7 @@ def startup_event():
         state_lookup = {}
         bio_to_committees = {}
 
-    @app.get("/")
+@app.get("/")
 def read_root():
     """Simple root endpoint for testing"""
     return {
