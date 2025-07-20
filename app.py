@@ -88,29 +88,64 @@ bio_to_committees = {}
 def get_committees(bioguide_id):
     return bio_to_committees.get(bioguide_id, [])
 
+def load_state_lookup_from_yaml():
+    """Load state lookup data with error handling"""
+    try:
+        lookup = {}
+        base_dir = os.path.dirname(__file__)
+        
+        # Try to load both files
+        files_to_try = [
+            os.path.join(base_dir, "Backend/insider_dashboard/legislators-current.yaml"),
+            os.path.join(base_dir, "Backend/insider_dashboard/legislators-historical.yaml")
+        ]
+        
+        for filename in files_to_try:
+            if os.path.exists(filename):
+                print(f"Loading: {filename}")
+                with open(filename, "r") as f:
+                    data = yaml.safe_load(f)
+                    for person in data:
+                        bio_id = person.get("id", {}).get("bioguide")
+                        terms = person.get("terms", [])
+                        if bio_id and terms:
+                            latest_term = terms[-1]
+                            state = latest_term.get("state")
+                            if state:
+                                lookup[bio_id] = state
+            else:
+                print(f"File not found: {filename}")
+        
+        return lookup
+    except Exception as e:
+        print(f"Error loading state lookup: {e}")
+        return {}
+
 @app.on_event("startup")
 def startup_event():
     global congress_data, state_lookup, bio_to_committees
     
-    print("=== STARTUP DEBUG BEGIN ===")
-    print(f"PORT environment variable: {os.environ.get('PORT', 'NOT SET')}")
+    print("=== STARTUP WITH DATA LOADING ===")
     
     try:
-        # Initialize with empty data to test basic functionality
-        print("Initializing empty data structures...")
+        # Load cache (small operation)
+        load_cache()
+        print("Cache loaded successfully")
+        
+        # Load state lookup (small file)
+        state_lookup = load_state_lookup_from_yaml()
+        print(f"State lookup loaded: {len(state_lookup)} entries")
+        
+        # Keep congress data empty for now
         congress_data = []
-        state_lookup = {}
         bio_to_committees = {}
-        print("Empty data structures initialized successfully")
+        print("Congress data and committees: empty (will add later)")
         
-        # Skip all file loading and API calls for now
-        print("Skipping all file loading and API calls")
-        
-        print("=== STARTUP DEBUG COMPLETE ===")
+        print("=== STARTUP COMPLETE ===")
         
     except Exception as e:
         print(f"=== STARTUP ERROR: {e} ===")
-        # Initialize empty structures even if there's an error
+        # Fallback to empty data
         congress_data = []
         state_lookup = {}
         bio_to_committees = {}
@@ -138,7 +173,7 @@ def health_check():
 
 @app.get("/test")
 def test_endpoint():
-    """Simple test endpoint to verify app is running"""
+    """Test endpoint showing loaded data"""
     return {
         "status": "success",
         "message": "Congress tracker is running",
@@ -146,7 +181,8 @@ def test_endpoint():
             "congress_records": len(congress_data) if congress_data else 0,
             "state_lookup": len(state_lookup) if state_lookup else 0,
             "committees": len(bio_to_committees) if bio_to_committees else 0
-        }
+        },
+        "sample_states": dict(list(state_lookup.items())[:5]) if state_lookup else {}
     }
 
 # Temporarily comment out all the complex endpoints that require templates and data
