@@ -205,3 +205,141 @@ def test_endpoint():
         "sample_states": dict(list(state_lookup.items())[:5]) if state_lookup else {},
         "note": "Loading current legislators only to avoid memory issues"
     }
+
+# Add this function after your other functions:
+
+def load_congress_trading_data():
+    """Load congress trading data with memory optimization"""
+    try:
+        log_memory_usage("before congress API call")
+        
+        # Set API token as environment variable for security
+        api_token = os.getenv("QUIVER_API_TOKEN", "d95376201ee52332b90d7ab3e527076011921658")
+        
+        curl_command = [
+            "curl",
+            "-s",
+            "--max-time", "45",  # Longer timeout for large dataset
+            "--request", "GET",
+            "--url", "https://api.quiverquant.com/beta/bulk/congresstrading",
+            "--header", "Accept: application/json",
+            "--header", f"Authorization: Bearer {api_token}"
+        ]
+        
+        print("Fetching congress trading data from API...")
+        result = subprocess.run(curl_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=45)
+        
+        if result.returncode != 0:
+            print(f"API call failed with return code {result.returncode}")
+            print(f"Error: {result.stderr}")
+            return []
+        
+        log_memory_usage("after API call, before parsing")
+        
+        # Parse JSON
+        try:
+            full_data = json.loads(result.stdout)
+            print(f"Raw API response: {len(full_data)} total records")
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse JSON: {e}")
+            print(f"Response preview: {result.stdout[:500]}")
+            return []
+        
+        log_memory_usage("after JSON parsing")
+        
+        # Filter to recent data only (last 2 years) to save memory
+        cutoff_date = datetime.now() - timedelta(days=730)
+        filtered_data = []
+        
+        for item in full_data:
+            try:
+                traded_str = item.get("Traded", "")
+                if traded_str:
+                    traded_date = datetime.strptime(traded_str, "%Y-%m-%d")
+                    if traded_date >= cutoff_date:
+                        filtered_data.append(item)
+            except (ValueError, TypeError):
+                continue  # Skip records with invalid dates
+        
+        # Clear the full dataset from memory immediately
+        del full_data
+        gc.collect()
+        
+        log_memory_usage("after filtering and cleanup")
+        
+        print(f"Filtered to {len(filtered_data)} records from last 2 years")
+        return filtered_data
+        
+    except subprocess.TimeoutExpired:
+        print("API call timed out after 45 seconds")
+        return []
+    except Exception as e:
+        print(f"Error loading congress data: {e}")
+        log_memory_usage("after error")
+        return []
+
+# Update your startup_event function:
+@app.on_event("startup")
+def startup_event():
+    global congress_data, state_lookup, bio_to_committees
+    
+    log_memory_usage("startup begin")
+    print("=== STARTUP WITH CONGRESS TRADING DATA ===")
+    
+    try:
+        # Load cache
+        load_cache()
+        log_memory_usage("after cache")
+        
+        # Load current legislators
+        state_lookup = load_current_legislators_only()
+        log_memory_usage("after legislators")
+        
+        # NEW: Load congress trading data
+        congress_data = load_congress_trading_data()
+        log_memory_usage("after congress data")
+        
+        # Keep committees empty for now
+        bio_to_committees = {}
+        
+        # Final cleanup
+        gc.collect()
+        log_memory_usage("final memory usage")
+        
+        print(f"=== STARTUP COMPLETE ===")
+        print(f"Loaded: {len(state_lookup)} legislators, {len(congress_data)} trades")
+        
+    except Exception as e:
+        print(f"=== STARTUP ERROR: {e} ===")
+        log_memory_usage("after error")
+        congress_data = []
+        state_lookup = {}
+        bio_to_committees = {}
+
+# Update your test endpoint:
+@app.get("/test")
+def test_endpoint():
+    """Test endpoint showing all loaded data"""
+    # Get some sample trade data
+    sample_trades = congress_data[:3] if congress_data else []
+    
+    # Get unique politicians from trades
+    politicians = set()
+    for trade in congress_data[:100]:  # Check first 100 trades
+        name = trade.get("Name", "")
+        if name:
+            politicians.add(name)
+    
+    return {
+        "status": "success", 
+        "message": "Congress tracker with trading data",
+        "data_loaded": {
+            "congress_records": len(congress_data),
+            "current_legislators": len(state_lookup),
+            "committees": len(bio_to_committees),
+            "unique_politicians_trading": len(politicians)
+        },
+        "sample_states": dict(list(state_lookup.items())[:3]),
+        "sample_trades": sample_trades,
+        "note": "Last 2 years of trading data loaded"
+    }
