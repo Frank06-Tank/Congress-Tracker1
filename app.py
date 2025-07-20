@@ -18,6 +18,15 @@ app = FastAPI()
 ticker_cache = {}
 CACHE_PATH = "ticker_cache.json"
 
+def log_memory_usage(label=""):
+    """Log current memory usage"""
+    try:
+        process = psutil.Process(os.getpid())
+        memory_mb = process.memory_info().rss / 1024 / 1024
+        print(f"Memory usage {label}: {memory_mb:.1f} MB")
+    except:
+        print(f"Memory check {label}: unable to measure")
+
 def load_cache():
     global ticker_cache
     if os.path.exists(CACHE_PATH):
@@ -88,64 +97,84 @@ bio_to_committees = {}
 def get_committees(bioguide_id):
     return bio_to_committees.get(bioguide_id, [])
 
-def load_state_lookup_from_yaml():
-    """Load state lookup data with error handling"""
+def load_state_lookup_minimal():
+    """Try to load just ONE small YAML file to test memory"""
     try:
-        lookup = {}
         base_dir = os.path.dirname(__file__)
+        filename = os.path.join(base_dir, "Backend/insider_dashboard/legislators-current.yaml")
         
-        # Try to load both files
-        files_to_try = [
-            os.path.join(base_dir, "Backend/insider_dashboard/legislators-current.yaml"),
-            os.path.join(base_dir, "Backend/insider_dashboard/legislators-historical.yaml")
-        ]
+        log_memory_usage("before YAML load")
         
-        for filename in files_to_try:
-            if os.path.exists(filename):
-                print(f"Loading: {filename}")
-                with open(filename, "r") as f:
-                    data = yaml.safe_load(f)
-                    for person in data:
-                        bio_id = person.get("id", {}).get("bioguide")
-                        terms = person.get("terms", [])
-                        if bio_id and terms:
-                            latest_term = terms[-1]
-                            state = latest_term.get("state")
-                            if state:
-                                lookup[bio_id] = state
-            else:
-                print(f"File not found: {filename}")
-        
-        return lookup
+        if os.path.exists(filename):
+            print(f"Found file: {filename}")
+            # Check file size first
+            file_size = os.path.getsize(filename) / 1024 / 1024  # MB
+            print(f"File size: {file_size:.2f} MB")
+            
+            if file_size > 50:  # If larger than 50MB, skip
+                print("File too large, skipping")
+                return {}
+            
+            with open(filename, "r") as f:
+                data = yaml.safe_load(f)
+                log_memory_usage("after YAML load")
+                
+                # Process only first 100 entries to test
+                lookup = {}
+                count = 0
+                for person in data:
+                    if count >= 100:  # Limit to first 100 for testing
+                        break
+                    bio_id = person.get("id", {}).get("bioguide")
+                    terms = person.get("terms", [])
+                    if bio_id and terms:
+                        latest_term = terms[-1]
+                        state = latest_term.get("state")
+                        if state:
+                            lookup[bio_id] = state
+                            count += 1
+                
+                log_memory_usage("after processing")
+                return lookup
+        else:
+            print(f"File not found: {filename}")
+            return {}
+            
     except Exception as e:
-        print(f"Error loading state lookup: {e}")
+        print(f"Error in minimal load: {e}")
+        log_memory_usage("after error")
         return {}
 
 @app.on_event("startup")
 def startup_event():
     global congress_data, state_lookup, bio_to_committees
     
-    print("=== STARTUP WITH DATA LOADING ===")
+    log_memory_usage("startup begin")
+    print("=== MINIMAL STARTUP WITH MEMORY TESTING ===")
     
     try:
-        # Load cache (small operation)
+        # Load cache (should be tiny)
         load_cache()
-        print("Cache loaded successfully")
+        log_memory_usage("after cache")
         
-        # Load state lookup (small file)
-        state_lookup = load_state_lookup_from_yaml()
-        print(f"State lookup loaded: {len(state_lookup)} entries")
+        # Try minimal YAML loading
+        state_lookup = load_state_lookup_minimal()
+        print(f"Loaded {len(state_lookup)} state entries (limited for testing)")
+        log_memory_usage("after minimal YAML")
         
-        # Keep congress data empty for now
+        # Keep everything else empty
         congress_data = []
         bio_to_committees = {}
-        print("Congress data and committees: empty (will add later)")
+        
+        # Force garbage collection
+        gc.collect()
+        log_memory_usage("after gc")
         
         print("=== STARTUP COMPLETE ===")
         
     except Exception as e:
         print(f"=== STARTUP ERROR: {e} ===")
-        # Fallback to empty data
+        log_memory_usage("after error")
         congress_data = []
         state_lookup = {}
         bio_to_committees = {}
@@ -176,29 +205,11 @@ def test_endpoint():
     """Test endpoint showing loaded data"""
     return {
         "status": "success",
-        "message": "Congress tracker is running",
+        "message": "Congress tracker is running (memory debug mode)",
         "data_loaded": {
             "congress_records": len(congress_data) if congress_data else 0,
             "state_lookup": len(state_lookup) if state_lookup else 0,
             "committees": len(bio_to_committees) if bio_to_committees else 0
         },
-        "sample_states": dict(list(state_lookup.items())[:5]) if state_lookup else {}
+        "sample_states": dict(list(state_lookup.items())[:3]) if state_lookup else {}
     }
-
-# Temporarily comment out all the complex endpoints that require templates and data
-# We'll add these back once basic deployment works
-
-# @app.get("/", response_class=HTMLResponse)
-# def homepage(request: Request, page: int = 1, name: str = "", party: str = "", state: str = "", committee: str = ""):
-#     # This endpoint requires templates and data, skip for now
-#     pass
-
-# @app.get("/politician/{name}", response_class=HTMLResponse) 
-# def profile(request: Request, name: str, page: int = 1):
-#     # This endpoint requires templates and data, skip for now
-#     pass
-
-# @app.get("/dashboard", response_class=HTMLResponse)
-# def dashboard(request: Request, page: int = 1, name: str = "", party: str = "", state: str = "", industry: List[str] = Query(default=[]), committee: List[str] = Query(default=[]), transaction: str = "", range: str = "", after: str = ""):
-#     # This endpoint requires templates and data, skip for now
-#     pass
