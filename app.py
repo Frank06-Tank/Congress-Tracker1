@@ -90,87 +90,70 @@ congress_data = []
 state_lookup = {}
 bio_to_committees = {}
 
-# Temporarily disable templates for testing
-# templates = Jinja2Templates(directory="Frontend/src/templates")
-# templates.env.filters["format_trade_size"] = format_trade_size
-
 def get_committees(bioguide_id):
     return bio_to_committees.get(bioguide_id, [])
-    
-# Replace the load_state_lookup_minimal function with this full version:
 
-def load_state_lookup_from_yaml():
-    """Load complete state lookup data with memory monitoring"""
+def load_current_legislators_only():
+    """Load ONLY the current legislators file (smaller, safer)"""
     try:
         base_dir = os.path.dirname(__file__)
-        lookup = {}
+        filename = os.path.join(base_dir, "Backend/insider_dashboard/legislators-current.yaml")
         
-        # Files to load
-        files_to_try = [
-            os.path.join(base_dir, "Backend/insider_dashboard/legislators-current.yaml"),
-            os.path.join(base_dir, "Backend/insider_dashboard/legislators-historical.yaml")
-        ]
+        log_memory_usage("before current legislators")
         
-        log_memory_usage("before all YAML files")
-        
-        for filename in files_to_try:
-            if os.path.exists(filename):
-                file_size = os.path.getsize(filename) / 1024 / 1024  # MB
-                print(f"Loading: {filename} ({file_size:.2f} MB)")
+        if os.path.exists(filename):
+            file_size = os.path.getsize(filename) / 1024 / 1024  # MB
+            print(f"Loading current legislators: {filename} ({file_size:.2f} MB)")
+            
+            with open(filename, "r") as f:
+                data = yaml.safe_load(f)
                 
-                log_memory_usage(f"before {os.path.basename(filename)}")
-                
-                with open(filename, "r") as f:
-                    data = yaml.safe_load(f)
-                    
-                log_memory_usage(f"after loading {os.path.basename(filename)}")
-                
-                # Process all entries (not limited anymore)
-                for person in data:
-                    bio_id = person.get("id", {}).get("bioguide")
-                    terms = person.get("terms", [])
-                    if bio_id and terms:
-                        latest_term = terms[-1]
-                        state = latest_term.get("state")
-                        if state:
-                            lookup[bio_id] = state
-                
-                log_memory_usage(f"after processing {os.path.basename(filename)}")
-                
-                # Clear the loaded data from memory
-                del data
-                gc.collect()
-                log_memory_usage(f"after gc {os.path.basename(filename)}")
-                
-            else:
-                print(f"File not found: {filename}")
-        
-        print(f"Total legislators loaded: {len(lookup)}")
-        return lookup
-        
+            log_memory_usage("after loading current legislators")
+            
+            lookup = {}
+            for person in data:
+                bio_id = person.get("id", {}).get("bioguide")
+                terms = person.get("terms", [])
+                if bio_id and terms:
+                    latest_term = terms[-1]
+                    state = latest_term.get("state")
+                    if state:
+                        lookup[bio_id] = state
+            
+            # Clear loaded data immediately
+            del data
+            gc.collect()
+            log_memory_usage("after processing current legislators")
+            
+            print(f"Loaded {len(lookup)} current legislators")
+            return lookup
+            
+        else:
+            print(f"Current legislators file not found: {filename}")
+            return {}
+            
     except Exception as e:
-        print(f"Error loading state lookup: {e}")
+        print(f"Error loading current legislators: {e}")
         log_memory_usage("after error")
         return {}
 
-# Update the startup_event function:
 @app.on_event("startup")
 def startup_event():
     global congress_data, state_lookup, bio_to_committees
     
     log_memory_usage("startup begin")
-    print("=== STARTUP WITH FULL YAML LOADING ===")
+    print("=== STARTUP WITH CURRENT LEGISLATORS ONLY ===")
     
     try:
         # Load cache
         load_cache()
         log_memory_usage("after cache")
         
-        # Load complete state lookup
-        state_lookup = load_state_lookup_from_yaml()
-        log_memory_usage("after complete state lookup")
+        # Load ONLY current legislators (skip historical for now)
+        state_lookup = load_current_legislators_only()
+        log_memory_usage("after current legislators")
         
-        # Keep congress data empty for now
+        # Keep everything else empty
         congress_data = []
         bio_to_committees = {}
         
@@ -187,18 +170,38 @@ def startup_event():
         state_lookup = {}
         bio_to_committees = {}
 
-# Update test endpoint to show more data:
+@app.on_event("shutdown")
+def shutdown_event():
+    save_cache()
+
+@app.get("/")
+def read_root():
+    """Simple root endpoint for testing"""
+    return {
+        "message": "Congress Tracker API is running",
+        "status": "success",
+        "endpoints": {
+            "health": "/health",
+            "test": "/test",
+            "docs": "/docs"
+        }
+    }
+
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "message": "Service is running"}
+
 @app.get("/test")
 def test_endpoint():
     """Test endpoint showing loaded data"""
     return {
         "status": "success", 
-        "message": "Congress tracker with full YAML loading",
+        "message": "Congress tracker with current legislators only",
         "data_loaded": {
             "congress_records": len(congress_data) if congress_data else 0,
-            "state_lookup": len(state_lookup) if state_lookup else 0,
+            "current_legislators": len(state_lookup) if state_lookup else 0,
             "committees": len(bio_to_committees) if bio_to_committees else 0
         },
         "sample_states": dict(list(state_lookup.items())[:5]) if state_lookup else {},
-        "total_legislators": len(state_lookup) if state_lookup else 0
+        "note": "Loading current legislators only to avoid memory issues"
     }
