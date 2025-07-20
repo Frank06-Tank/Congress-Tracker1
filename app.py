@@ -9,7 +9,8 @@ import yaml
 import json
 import os
 import yfinance as yf
-
+import gc
+import psutil
 
 app = FastAPI()
 
@@ -116,28 +117,67 @@ def load_state_lookup_from_yaml():
 
 bio_to_committees = {}
 
+@app.get("/test")
+def test_endpoint():
+    """Simple test endpoint to verify app is running"""
+    return {
+        "status": "success",
+        "message": "Congress tracker is running",
+        "data_loaded": {
+            "congress_records": len(congress_data) if congress_data else 0,
+            "state_lookup": len(state_lookup) if state_lookup else 0,
+            "committees": len(bio_to_committees) if bio_to_committees else 0
+        }
+    }
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy"}
+
+@app.on_event("startup")
+def log_memory_usage(label=""):
+    """Log current memory usage"""
+    try:
+        process = psutil.Process(os.getpid())
+        memory_mb = process.memory_info().rss / 1024 / 1024
+        print(f"Memory usage {label}: {memory_mb:.1f} MB")
+    except:
+        print(f"Memory check {label}: unable to measure")
+
 @app.on_event("startup")
 def startup_event():
     global congress_data, state_lookup, bio_to_committees
+    
+    log_memory_usage("startup begin")
+    
+    # Load small files first
     load_cache()
-    state_lookup = load_state_lookup_from_yaml()
-
-    # Load trading data
-    curl_command = [
-        "curl",
-        "-s",
-        "--request", "GET",
-        "--url", "https://api.quiverquant.com/beta/bulk/congresstrading",
-        "--header", "Accept: application/json",
-        "--header", "Authorization: Bearer d95376201ee52332b90d7ab3e527076011921658"
-    ]
-    result = subprocess.run(curl_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    log_memory_usage("after cache load")
+    
     try:
-        congress_data = json.loads(result.stdout)
-        print(f"Loaded {len(congress_data)} records.")
+        state_lookup = load_state_lookup_from_yaml()
+        print(f"Loaded state lookup: {len(state_lookup)} entries")
+        log_memory_usage("after state lookup")
     except Exception as e:
-        print("Failed to parse JSON:", e)
-        print("Output:", result.stdout[:300])
+        print(f"Error loading state lookup: {e}")
+        state_lookup = {}
+    
+    # TEMPORARILY SKIP the large congress data API call to test deployment
+    print("TEMPORARILY SKIPPING congress data API call for memory testing")
+    congress_data = []
+    log_memory_usage("after skipping congress data")
+    
+    # Skip committee processing for now
+    print("TEMPORARILY SKIPPING committee processing for memory testing")
+    bio_to_committees = {}
+    log_memory_usage("after skipping committees")
+    
+    # Force garbage collection
+    gc.collect()
+    log_memory_usage("after garbage collection")
+    
+    print("Startup completed with minimal data loading")
 
     # Precompute committee mapping
     id_to_names = {}
