@@ -14,19 +14,6 @@ import psutil
 
 app = FastAPI()
 
-# Add this after your FastAPI app creation:
-@app.get("/health")
-def health_check():
-    return {"status": "healthy", "message": "Service is running"}
-
-@app.get("/test")
-def test_endpoint():
-    return {
-        "status": "success",
-        "congress_data_count": len(congress_data) if congress_data else 0,
-        "state_lookup_count": len(state_lookup) if state_lookup else 0
-    }
-
 # ---- Caching Setup ----
 ticker_cache = {}
 CACHE_PATH = "ticker_cache.json"
@@ -46,6 +33,7 @@ def save_cache():
         json.dump(ticker_cache, f)
 
 def fetch_company_info(ticker: str) -> dict:
+    """Temporarily disabled yfinance API calls - using fallback data only"""
     if not ticker or not isinstance(ticker, str):
         return {"name": "Unknown", "industry": "Unknown"}
 
@@ -53,26 +41,11 @@ def fetch_company_info(ticker: str) -> dict:
     if ticker in ticker_cache:
         return ticker_cache[ticker]
 
-    try:
-        t = yf.Ticker(ticker)
-        info = t.info or {}
-
-        name = info.get("longName") or info.get("shortName")
-        if not isinstance(name, str) or name.strip().isdigit():
-            name = ticker  # fallback to ticker only if valid name not found
-
-        result = {
-            "name": name,
-            "industry": info.get("industry", "General")
-        }
-        ticker_cache[ticker] = result
-        save_cache()
-        return result
-    except Exception as e:
-        print(f"yfinance failed for {ticker}: {e}")
-        fallback = {"name": ticker, "industry": "General"}
-        ticker_cache[ticker] = fallback
-        return fallback
+    # TEMPORARILY DISABLED: Skip yfinance API calls for testing
+    fallback = {"name": ticker, "industry": "General"}
+    ticker_cache[ticker] = fallback
+    save_cache()
+    return fallback
 
 def format_trade_size(amount_str):
     try:
@@ -103,50 +76,17 @@ def format_trade_size(amount_str):
     else:
         return "50M+"
 
-templates = Jinja2Templates(directory="Frontend/src/templates")
-templates.env.filters["format_trade_size"] = format_trade_size
-
+# Initialize global variables
 congress_data = []
 state_lookup = {}
-
-def load_state_lookup_from_yaml():
-    path = os.path.join(os.path.dirname(__file__), "Backend/insider_dashboard/legislators-historical.yaml")
-    with open(path, "r") as f:
-        data = yaml.safe_load(f)
-
-    lookup = {}
-    for filename in ["Backend/insider_dashboard/legislators-current.yaml", "Backend/insider_dashboard/legislators-historical.yaml"]:
-        with open(filename, "r") as f:
-            data = yaml.safe_load(f)
-            for person in data:
-                bio_id = person.get("id", {}).get("bioguide")
-                terms = person.get("terms", [])
-                if bio_id and terms:
-                    latest_term = terms[-1]
-                    state = latest_term.get("state")
-                    if state:
-                        lookup[bio_id] = state
-    return lookup
-
 bio_to_committees = {}
 
-@app.get("/test")
-def test_endpoint():
-    """Simple test endpoint to verify app is running"""
-    return {
-        "status": "success",
-        "message": "Congress tracker is running",
-        "data_loaded": {
-            "congress_records": len(congress_data) if congress_data else 0,
-            "state_lookup": len(state_lookup) if state_lookup else 0,
-            "committees": len(bio_to_committees) if bio_to_committees else 0
-        }
-    }
+# Temporarily disable templates for testing
+# templates = Jinja2Templates(directory="Frontend/src/templates")
+# templates.env.filters["format_trade_size"] = format_trade_size
 
-@app.get("/health")
-def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy"}
+def get_committees(bioguide_id):
+    return bio_to_committees.get(bioguide_id, [])
 
 @app.on_event("startup")
 def startup_event():
@@ -175,6 +115,10 @@ def startup_event():
         state_lookup = {}
         bio_to_committees = {}
 
+@app.on_event("shutdown")
+def shutdown_event():
+    save_cache()
+
 @app.get("/")
 def read_root():
     """Simple root endpoint for testing"""
@@ -188,273 +132,37 @@ def read_root():
         }
     }
 
-    # Precompute committee mapping
-    id_to_names = {}
-    for entry in historical_data:
-        base_id = entry.get("thomas_id")
-        if not base_id:
-            continue
-        id_to_names[base_id] = entry.get("name", f"Committee {base_id}")
-        for sub in entry.get("subcommittees", []):
-            sub_id = sub.get("thomas_id", "")
-            full_id = base_id + sub_id
-            id_to_names[full_id] = entry.get("name", f"Committee {full_id}")
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "message": "Service is running"}
 
-    for committee_id, members in membership_data.items():
-        for member in members:
-            bio = member.get("bioguide")
-            if not bio:
-                continue
-            if bio not in bio_to_committees:
-                bio_to_committees[bio] = set()
-            name = id_to_names.get(committee_id)
-            if name:
-                bio_to_committees[bio].add(name)
-
-    # convert sets to sorted lists for later use
-    for bio, committees in bio_to_committees.items():
-        bio_to_committees[bio] = sorted(committees)
-
-
-@app.on_event("shutdown")
-def shutdown_event():
-    save_cache()
-
-committee_membership_file = "Backend/insider_dashboard/committee-membership-current.yaml"
-committees_historical_file = "Backend/insider_dashboard/committees-historical.yaml"
-
-# Load both YAML files once
-with open(committee_membership_file, "r") as f:
-    membership_data = yaml.safe_load(f)
-
-with open(committees_historical_file, "r") as f:
-    historical_data = yaml.safe_load(f)
-
-# Map thomas_id to committee name
-thomas_to_name = {
-    entry.get("thomas_id"): entry.get("name", "Unknown Committee")
-    for entry in historical_data if "thomas_id" in entry
-}
-
-def get_committees(bioguide_id):
-    return bio_to_committees.get(bioguide_id, [])
-
-@app.get("/", response_class=HTMLResponse)
-def homepage(request: Request, page: int = 1, name: str = "", party: str = "", state: str = "", committee: str = ""):
-    per_page = 20
-    grouped = {}
-    for item in congress_data:
-        person_name = item.get("Name")
-        bio_id = item.get("BioGuideID")
-        state_value = state_lookup.get(bio_id, "")
-        committees = get_committees(bio_id)
-
-        if person_name not in grouped:
-            grouped[person_name] = {
-                "name": person_name,
-                "party": item.get("Party", ""),
-                "chamber": item.get("Chamber", ""),
-                "state": state_value,
-                "committees": committees,
-                "trades": 0,
-                "last_traded": item.get("Traded", ""),
-            }
-        grouped[person_name]["trades"] += 1
-
-    filtered = []
-    for p in grouped.values():
-        if name.lower() in p["name"].lower() and \
-           (party == "" or p["party"] == party) and \
-           (state == "" or p["state"] == state) and \
-           (committee == "" or committee in p["committees"]):
-            filtered.append(p)
-
-    politicians = sorted(filtered, key=lambda x: x["trades"], reverse=True)
-    total = len(politicians)
-    start = (page - 1) * per_page
-    end = start + per_page
-    paginated = politicians[start:end]
-    total_pages = (total + per_page - 1) // per_page
-
-    parties = sorted(set(p["party"] for p in grouped.values() if p["party"]))
-    states = sorted(set(p["state"] for p in grouped.values() if p["state"]))
-    committees_all = sorted(set(c for p in grouped.values() for c in p["committees"]))
-
-    return templates.TemplateResponse("home.html", {
-        "request": request,
-        "politicians": paginated,
-        "page": page,
-        "total_pages": total_pages,
-        "filter_name": name,
-        "filter_party": party,
-        "filter_state": state,
-        "filter_committee": committee,
-        "party_options": parties,
-        "state_options": states,
-        "committee_options": committees_all,
-    })
-
-@app.get("/politician/{name}", response_class=HTMLResponse)
-def profile(request: Request, name: str, page: int = 1):
-    decoded_name = unquote(name).strip()
-    trades = [
-        t for t in congress_data
-        if isinstance(t, dict) and t.get("Name", "").strip() == decoded_name
-    ]
-
-    if not trades:
-        raise HTTPException(status_code=404, detail="Politician not found")
-
-    trades.sort(key=lambda t: t.get("Traded", ""), reverse=True)
-
-    per_page = 50
-    total_pages = (len(trades) + per_page - 1) // per_page
-    start = (page - 1) * per_page
-    end = start + per_page
-    page_trades = trades[start:end]
-
-    for trade in page_trades:
-        ticker = trade.get("Ticker")
-        info = fetch_company_info(ticker)
-        trade["company_name"] = info["name"]
-        trade["industry"] = info["industry"]
-
-    bio_id = trades[0].get("BioGuideID")
-    committees = get_committees(bio_id)
-    state = state_lookup.get(bio_id, "")
-
-    profile_info = {
-        "name": trades[0]["Name"],
-        "party": trades[0].get("Party", ""),
-        "chamber": trades[0].get("Chamber", ""),
-        "state": state,
-        "committee" : committees,
-        "trades": page_trades
+@app.get("/test")
+def test_endpoint():
+    """Simple test endpoint to verify app is running"""
+    return {
+        "status": "success",
+        "message": "Congress tracker is running",
+        "data_loaded": {
+            "congress_records": len(congress_data) if congress_data else 0,
+            "state_lookup": len(state_lookup) if state_lookup else 0,
+            "committees": len(bio_to_committees) if bio_to_committees else 0
+        }
     }
 
-    return templates.TemplateResponse("profile.html", {
-        "request": request,
-        "profile": profile_info,
-        "page": page,
-        "total_pages": total_pages
-    })
+# Temporarily comment out all the complex endpoints that require templates and data
+# We'll add these back once basic deployment works
 
-@app.get("/dashboard", response_class=HTMLResponse)
-def dashboard(
-    request: Request,
-    page: int = 1,
-    name: str = "",
-    party: str = "",
-    state: str = "",
-    industry: List[str] = Query(default=[]),
-    committee: List[str] = Query(default=[]),
-    transaction: str = "",
-    range: str = "",
-    after: str = ""
-):
-    per_page = 100
-    cutoff_date = datetime.now() - timedelta(days=3 * 365)
+# @app.get("/", response_class=HTMLResponse)
+# def homepage(request: Request, page: int = 1, name: str = "", party: str = "", state: str = "", committee: str = ""):
+#     # This endpoint requires templates and data, skip for now
+#     pass
 
-    # Parse user-provided date filter if valid
-    try:
-        after_date = datetime.strptime(after, "%Y-%m-%d") if after else cutoff_date
-    except ValueError:
-        after_date = cutoff_date
+# @app.get("/politician/{name}", response_class=HTMLResponse) 
+# def profile(request: Request, name: str, page: int = 1):
+#     # This endpoint requires templates and data, skip for now
+#     pass
 
-    valid_trades = []
-    industry_set = set()
-    committee_set = set()
-    party_set = set()
-    state_set = set()
-    transaction_set = set()
-
-    for t in congress_data:
-        traded_str = t.get("Traded", "")
-        try:
-            traded_date = datetime.strptime(traded_str, "%Y-%m-%d")
-        except ValueError:
-            continue
-
-        if traded_date < after_date:
-            continue
-
-        bio = t.get("BioGuideID")
-        ticker = t.get("Ticker", "").upper()
-
-        if ticker in ticker_cache:
-            info = ticker_cache[ticker]
-        else:
-            info = fetch_company_info(ticker)
-
-        trade_industry = info.get("industry", "General")
-        # Collect filters
-        industry_set.add(trade_industry)
-        for c in get_committees(bio):
-            if c:
-                committee_set.add(c)
-        party_set.add(t.get("Party", ""))
-        state_set.add(state_lookup.get(bio, ""))
-        transaction_set.add(t.get("Transaction", ""))
-
-        # Apply filters
-        if name.lower() not in t.get("Name", "").lower():
-            continue
-        if party and t.get("Party", "") != party:
-            continue
-        if state and state_lookup.get(bio, "") != state:
-            continue
-        if industry and trade_industry not in industry:
-            continue
-        if transaction and t.get("Transaction", "") != transaction:
-            continue
-        if range and format_trade_size(t.get("Trade_Size_USD")) != range:
-            continue
-        committees = get_committees(bio)
-        if committee and not any(c in get_committees(bio) for c in committee):
-            continue
-
-        valid_trades.append({
-            "name": t.get("Name"),
-            "party": t.get("Party", ""),
-            "chamber": t.get("Chamber", ""),
-            "state": state_lookup.get(bio, ""),
-            "ticker": ticker,
-            "company_name": info["name"],
-            "industry": trade_industry,
-            "traded": t.get("Traded"),
-            "filed": t.get("Filed"),
-            "price": t.get("Price"),
-            "transaction": t.get("Transaction"),
-            "size": format_trade_size(t.get("Trade_Size_USD")),
-        })
-
-    total = len(valid_trades)
-    total_pages = (total + per_page - 1) // per_page
-    start = (page - 1) * per_page
-    end = start + per_page
-    paginated = valid_trades[start:end]
-
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
-        "trades": paginated,
-        "page": page,
-        "total_pages": total_pages,
-        "filter_name": name,
-        "filter_party": party,
-        "filter_state": state,
-        "filter_industry": industry,
-        "filter_transaction": transaction,
-        "filter_range": range,
-        "filter_after": after,
-        "industry_options": sorted(industry_set),
-        "party_options": sorted(party_set),
-        "state_options": sorted(s for s in state_set if s),
-        "transaction_options": sorted(transaction_set),
-        "filter_committee": committee,
-        "committee_options": sorted(committee_set),
-        "range_options": [
-            "< 1K", "1K–15K", "15K–50K", "50K–100K",
-            "100K–250K", "250K–500K", "500K–1M", "1M–5M",
-            "5M–25M", "25M–50M", "50M+"
-        ]
-    })
+# @app.get("/dashboard", response_class=HTMLResponse)
+# def dashboard(request: Request, page: int = 1, name: str = "", party: str = "", state: str = "", industry: List[str] = Query(default=[]), committee: List[str] = Query(default=[]), transaction: str = "", range: str = "", after: str = ""):
+#     # This endpoint requires templates and data, skip for now
+#     pass
