@@ -14,6 +14,19 @@ import psutil
 
 app = FastAPI()
 
+# Add this after your FastAPI app creation:
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "message": "Service is running"}
+
+@app.get("/test")
+def test_endpoint():
+    return {
+        "status": "success",
+        "congress_data_count": len(congress_data) if congress_data else 0,
+        "state_lookup_count": len(state_lookup) if state_lookup else 0
+    }
+
 # ---- Caching Setup ----
 ticker_cache = {}
 CACHE_PATH = "ticker_cache.json"
@@ -136,48 +149,44 @@ def health_check():
     return {"status": "healthy"}
 
 @app.on_event("startup")
-def log_memory_usage(label=""):
-    """Log current memory usage"""
-    try:
-        process = psutil.Process(os.getpid())
-        memory_mb = process.memory_info().rss / 1024 / 1024
-        print(f"Memory usage {label}: {memory_mb:.1f} MB")
-    except:
-        print(f"Memory check {label}: unable to measure")
-
-@app.on_event("startup")
 def startup_event():
     global congress_data, state_lookup, bio_to_committees
     
-    log_memory_usage("startup begin")
-    
-    # Load small files first
-    load_cache()
-    log_memory_usage("after cache load")
+    print("=== STARTUP DEBUG BEGIN ===")
+    print(f"PORT environment variable: {os.environ.get('PORT', 'NOT SET')}")
     
     try:
-        state_lookup = load_state_lookup_from_yaml()
-        print(f"Loaded state lookup: {len(state_lookup)} entries")
-        log_memory_usage("after state lookup")
-    except Exception as e:
-        print(f"Error loading state lookup: {e}")
+        # Initialize with empty data to test basic functionality
+        print("Initializing empty data structures...")
+        congress_data = []
         state_lookup = {}
-    
-    # TEMPORARILY SKIP the large congress data API call to test deployment
-    print("TEMPORARILY SKIPPING congress data API call for memory testing")
-    congress_data = []
-    log_memory_usage("after skipping congress data")
-    
-    # Skip committee processing for now
-    print("TEMPORARILY SKIPPING committee processing for memory testing")
-    bio_to_committees = {}
-    log_memory_usage("after skipping committees")
-    
-    # Force garbage collection
-    gc.collect()
-    log_memory_usage("after garbage collection")
-    
-    print("Startup completed with minimal data loading")
+        bio_to_committees = {}
+        print("Empty data structures initialized successfully")
+        
+        # Skip all file loading and API calls for now
+        print("Skipping all file loading and API calls")
+        
+        print("=== STARTUP DEBUG COMPLETE ===")
+        
+    except Exception as e:
+        print(f"=== STARTUP ERROR: {e} ===")
+        # Initialize empty structures even if there's an error
+        congress_data = []
+        state_lookup = {}
+        bio_to_committees = {}
+
+    @app.get("/")
+def read_root():
+    """Simple root endpoint for testing"""
+    return {
+        "message": "Congress Tracker API is running",
+        "status": "success",
+        "endpoints": {
+            "health": "/health",
+            "test": "/test",
+            "docs": "/docs"
+        }
+    }
 
     # Precompute committee mapping
     id_to_names = {}
